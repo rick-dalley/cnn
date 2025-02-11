@@ -3,7 +3,7 @@ use std::io::{BufReader, BufRead};
 use matrix::matrix::Matrix;
 
 /// Loads the training & validation data into `Matrix` objects.
-pub fn populate(location: &str) -> (Matrix, Vec<f64>, Matrix, Vec<f64>) {
+pub fn populate(location: &str) -> (Matrix, Vec<usize>, Matrix, Vec<usize>) {
     let training_data_path = format!("{}/training_data.csv", location);
     let training_labels_path = format!("{}/training_labels.json", location);
     let validation_data_path = format!("{}/validation_data.csv", location);
@@ -51,7 +51,7 @@ fn load_csv(path: &str) -> Matrix {
 }
 
 /// Reads a JSON file containing labels into a `Vec<f64>`
-fn load_labels(path: &str) -> Vec<f64> {
+fn load_labels(path: &str) -> Vec<usize> {
     let file = File::open(path).expect(&format!("Failed to open JSON file: {}", path));
     let reader = BufReader::new(file);
     

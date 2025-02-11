@@ -140,6 +140,7 @@ pub struct Model {
     pub derivative_fn: Box<dyn ActivationTrait>,
 
 }
+
 impl Default for Model {
     fn default() -> Self {
         let (activation_fn, derivative_fn) = get_activation_and_derivative("sigmoid".to_string(), 0.01, 1.0);
@@ -390,7 +391,6 @@ impl Model {
         let (training, training_labels, validation, validation_labels) = loadr::populate(location);
 
         log::matrix_stats(0, 0, &validation, log_location, "validation", squelch);
-        log::n_elements("labels", &validation_labels, 10, log_location);
 
         let epochs = self.epochs;
         let batch_size = self.batch_size;
@@ -417,13 +417,15 @@ impl Model {
             for batch_start in (0..rows).step_by(batch_size){
                 let batch_end = (batch_start + batch_size).min(shuffled_training.rows);
                 // Extract a batch from the shuffled training data
-                let training_batch = shuffled_training.slice(batch_start, batch_end);
-                let label_batch = shuffled_labels[batch_start..batch_end].to_vec(); // Extract labels
-                log::n_elements("label batch", &label_batch, 10, log_location);
+                let batch_data = shuffled_training.slice(batch_start, batch_end);
+                let batch_labels = shuffled_labels[batch_start..batch_end].to_vec(); // Extract labels
 
-                let output = self.forward(&training_batch);
+                let predictions = self.forward(&batch_data);
+                let loss = self.calculate_loss(&predictions, &batch_labels);
+                self.backward(&predictions, &batch_labels, &batch_data);
+                self.update_weights();
 
-                log::matrix_stats(epoch, batch_number, &output, &log_location, "output", squelch);
+                log::matrix_stats(epoch, batch_number, &predictions, &log_location, "output", squelch);
 
                 batch_number += 1;
                 pb.inc(1);
@@ -532,5 +534,59 @@ impl Model {
 
         output
     }
+
+    fn calculate_loss(&self, predictions: &Matrix, labels: &[usize]) -> f64 {
+        let epsilon = 1e-9; // To avoid log(0)
+        
+        // Convert labels to one-hot matrix
+        let one_hot_labels = Matrix::from_labels(labels, predictions.cols);
+
+        // Ensure the predictions have valid probability values
+        let clipped_predictions = predictions.clamp_to(epsilon, 1.0 - epsilon);
+
+        // Compute cross-entropy loss: -sum(y_true * log(y_pred))
+        let log_preds = clipped_predictions.apply(&|x:f64| x.ln());
+        let loss_matrix = &one_hot_labels * &log_preds; // Element-wise multiplication
+        let loss = -loss_matrix.sum() / labels.len() as f64; // Normalize by batch size
+
+        loss
+    }
+
+    fn backward(&mut self, predictions: &Matrix, batch_labels: &Vec<usize>, batch_data: &Matrix){
+        //convert batch_labels (Vec<usize>) to a one-hot encoded Matrix
+        let batch_labels_matrix = Matrix::from_labels(batch_labels, predictions.cols);
+
+        // compute dL/dO (Cross-Entropy Loss Gradient)
+        let d_loss = predictions - &batch_labels_matrix;
+        // compute Activation Derivative
+        let d_activation = match self.activation_fn {
+            Activation::Sigmoid => predictions.apply(&|x| x * (1.0 - x)),
+            Activation::ReLU => predictions.apply(&|x| if x > 0.0 { 1.0 } else { 0.0 }),
+            _ => panic!("Unsupported activation!"),
+        };
+        let d_output = d_loss * d_activation;
+
+        // compute gradients for dense layer
+        let d_weights = batch_data.transpose().dot(&d_output);
+        let d_biases = d_output.sum_axis(0);
+
+        //compute gradients for convolutional layers
+        let mut conv_gradients = Vec::new();
+        for i in 0..self.num_filters {
+            let d_filter = convolve(&batch_data, &d_output, 1, 0);
+            conv_gradients.push(d_filter);
+        }
+
+        // store gradients
+        self.dense_gradients = d_weights;
+        self.bias_gradients = d_biases;
+        self.conv_gradients = conv_gradients;
+    }
+
+    fn update_weights(&self) {
+
+    }
+
+
 
 }
