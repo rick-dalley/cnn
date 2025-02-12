@@ -91,39 +91,6 @@ impl FromStr for WeightInitialization {
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct Layer {
-//     pub weights: Matrix,
-//     pub biases: Matrix,
-//     pub stride_size: usize,
-//     pub kernel_size: usize,
-//     pub activation_fn: Box<dyn ActivationTrait>,
-//     pub derivative_fn: Box<dyn ActivationTrait>
-// }
-
-// impl Layer {
-//     // Constructor for initializing a new layer with random weights and zero biases
-//     pub fn new(
-//         input_dim: usize, 
-//         output_dim: usize, 
-//         stride_size: usize, 
-//         kernel_size: usize,
-//         function_family: String, 
-//         alpha: f64, 
-//         lambda:f64
-//     ) -> Self {
-//         let (activation_fn, derivative_fn) = activations::activations::get_activation_and_derivative(function_family, alpha, lambda);
-//         Self {
-//             weights: Matrix::random(input_dim, output_dim),
-//             biases: Matrix::zeros(1, output_dim),
-//             stride_size,
-//             kernel_size,
-//             activation_fn,
-//             derivative_fn
-
-//         }
-//     }
-// }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Model {
@@ -135,7 +102,6 @@ pub struct Model {
     pub clipping: usize,
     pub clip_threshold: f64,
     pub temperature_scaling: f64,
-    pub vocab_size: usize,
     pub batch_size: usize,
     pub num_classes: usize,
     pub num_heads: usize,
@@ -186,7 +152,6 @@ impl Default for Model {
             clipping: 0,
             clip_threshold: 0.0,
             temperature_scaling: 1.0,
-            vocab_size: 0,
             batch_size: 32,
             num_classes: 10,
             num_heads: 1,
@@ -271,10 +236,6 @@ impl Model {
         let temperature_scaling = json_value.get("temperature_scaling")
             .and_then(Value::as_f64)
             .unwrap_or(1.0);
-
-        let vocab_size = json_value.get("vocab_size")
-            .and_then(Value::as_u64)
-            .unwrap_or(10000) as usize;
 
         let batch_size = json_value.get("batch_size")
             .and_then(Value::as_u64)
@@ -433,7 +394,6 @@ impl Model {
             clipping,
             clip_threshold,
             temperature_scaling,
-            vocab_size,
             batch_size,
             num_classes,
             num_heads,
@@ -481,8 +441,8 @@ impl Model {
 
     pub fn initialize_convolutional_layers(
         conv_filters: &[usize], 
-        kernel_sizes: &[usize], // ✅ Add kernel sizes
-        stride_sizes: &[usize], // ✅ Add stride sizes
+        kernel_sizes: &[usize], 
+        stride_sizes: &[usize], 
         conv_family: &str, 
         alpha: f64, 
         lambda: f64
@@ -495,9 +455,8 @@ impl Model {
 
             layers.push(layr::Layer::new_convolutional(
                 filters, 
-                kernel_size,  // ✅ Use correct kernel size
-                stride,       // ✅ Use correct stride
-                kernel_size, 
+                kernel_size,  
+                stride,        
                 conv_family.to_string(),
                 alpha,
                 lambda
@@ -520,7 +479,7 @@ impl Model {
         let batch_size = self.batch_size;
         //Debugging
         // let rows = shuffled_training.rows;
-        let rows = 240;
+        let rows = 32;
 
         let total_batches = epochs * (rows / batch_size); // Total steps
 
@@ -547,7 +506,7 @@ impl Model {
                 let predictions = self.forward(&batch_data);
                 let loss = self.calculate_loss(&predictions, &batch_labels);
                 self.backward(&predictions, &batch_labels, &batch_data);
-                // self.update_weights();
+                self.update_weights();
 
                 log::matrix_stats(epoch, batch_number, &predictions, &log_location, "output", squelch);
 
@@ -575,6 +534,10 @@ impl Model {
 
         // Apply Fully Connected (Dense) Layers
         for layer in &self.dense_layers {
+            println!(
+                "Before apply_dense: output shape = {}x{}, layer.weights shape = {}x{}",
+                output.rows, output.cols, layer.weights.rows, layer.weights.cols
+            );
             output = self.apply_dense(&output, &layer)
         }
         // Return final output (logits)
@@ -592,15 +555,18 @@ impl Model {
     fn apply_convolution(&self, input: &Matrix, layer: &layr::Layer) -> Matrix {
         if let layr::LayerType::Convolutional { stride_size, kernel_size } = layer.layer_type {
             let num_filters = layer.weights.rows; // Number of filters = rows in weights matrix
-
-            let output_rows = (input.rows - kernel_size) / stride_size + 1;
-            let output_cols = (input.cols - kernel_size) / stride_size + 1;
-
+            let padding = self.padding.to_usize();
+            let output_rows = (input.rows - kernel_size + 2 * padding) / stride_size + 1;
+            let output_cols = (input.cols - kernel_size + 2 * padding) / stride_size + 1;
             let mut output_data = vec![0.0; output_rows * output_cols * num_filters];
 
-            for filter_idx in 0..num_filters {
+            let limit = num_filters - kernel_size;
+            for filter_idx in (0..limit).step_by(stride_size) {
                 let kernel_size = layer.get_kernel_size().expect("Kernel size missing in convolutional layer");
-                let kernel = layer.weights.get_filter(filter_idx, kernel_size);
+                let kernel = match layer.weights.get_filter(filter_idx, kernel_size) {
+                    Ok(kernel) => kernel,
+                    Err(err) => panic!("Error extracting filter: {}", err), 
+                };
                 let conv_result = input.convolve(&kernel, stride_size, self.padding.to_usize());
 
                 let offset = filter_idx * output_rows * output_cols;
@@ -660,7 +626,7 @@ impl Model {
             let d_weights = batch_data.transpose().dot(&d_activation);
             let d_biases = d_activation.sum_axis(matrix::matrix::Orientation::ColumnWise);
 
-            // ✅ Directly update weights and biases
+            // directly update weights and biases
             layer.weights = &layer.weights - &(d_weights * self.learning_rate);
             layer.biases = &layer.biases - &(d_biases * self.learning_rate);
 
@@ -677,7 +643,7 @@ impl Model {
             // Store convolutional gradients
             conv_gradients.push(d_filter.clone());
 
-            // ✅ Directly update weights and biases
+            //directly update weights and biases
             layer.weights = &layer.weights - &(d_filter * self.learning_rate);
             layer.biases = &layer.biases - &(d_activation.sum_axis(matrix::matrix::Orientation::ColumnWise) * self.learning_rate);
 

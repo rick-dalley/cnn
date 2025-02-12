@@ -189,7 +189,7 @@ pub fn model(model: &Model, log_location: &str, log_to: LogTo) {
             // Append model config as CSV row
             writeln!(
                 file,
-                "{}, {},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{:?},{:?},{:?},{:?},{:?},{},{},{:?},{:?},{},{:?},{:?}",
+                "{}, {},{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{:?},{:?},{:?},{:?},{:?},{},{},{:?},{:?},{},{:?},{:?}",
                 model.location,
                 model.epochs,
                 model.check_points,
@@ -198,7 +198,6 @@ pub fn model(model: &Model, log_location: &str, log_to: LogTo) {
                 model.clipping,
                 model.clip_threshold,
                 model.temperature_scaling,
-                model.vocab_size,
                 model.batch_size,
                 model.num_classes,
                 model.num_heads,

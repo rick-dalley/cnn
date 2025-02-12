@@ -50,25 +50,28 @@ impl Layer {
 
     // Constructor for Convolutional Layer
     pub fn new_convolutional(
-        input_dim: usize,
-        output_dim: usize,
-        stride_size: usize,
+        num_filters: usize,   // This represents output channels
         kernel_size: usize,
+        stride_size: usize,
         function_family: String,
         alpha: f64,
         lambda: f64,
     ) -> Self {
         let (activation_fn, derivative_fn) =
             activations::activations::get_activation_and_derivative(function_family, alpha, lambda);
+
+        let weight_rows = num_filters; // Each row represents a filter
+        let weight_cols = kernel_size * kernel_size; // Flattened filter
+
         Self {
-            weights: Matrix::random(input_dim, output_dim),
-            biases: Matrix::zeros(1, output_dim),
+            weights: Matrix::random(weight_rows, weight_cols),
+            biases: Matrix::zeros(1, num_filters), // One bias per filter
             activation_fn,
             derivative_fn,
             layer_type: LayerType::Convolutional {
                 stride_size,
                 kernel_size,
-            }, // Additional properties for Convolutional
+            },
         }
     }
 }

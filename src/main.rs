@@ -20,7 +20,7 @@ fn main() {
     };
 
     // Log CNN model to the screen
-    log::model(&cnn_model, "", log::LogTo::Screen);
+    // log::model(&cnn_model, "", log::LogTo::Screen);
 
     cnn_model.train();
 }
