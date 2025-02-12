@@ -1,5 +1,6 @@
 use activations::activations::ActivationTrait;
-use matrix::matrix::Matrix;
+use matrix::matrix::{Matrix, Dot};
+
 #[derive(Debug, Clone)]
 pub enum LayerType {
     Dense,
@@ -74,4 +75,15 @@ impl Layer {
             },
         }
     }
+
+    pub fn apply_weights_and_biases(&self, patch: &Matrix) -> Matrix {
+        if let LayerType::Convolutional { .. } = self.layer_type {
+            let weighted = patch.dot(&self.weights.transpose()); // Apply weights
+            let biased = &weighted + &self.biases; // Apply biases
+            biased
+        } else {
+            panic!("apply_weights_and_biases called on non-convolutional layer!");
+        }
+    }
+
 }

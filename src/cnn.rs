@@ -521,7 +521,11 @@ impl Model {
     }
 
     pub fn forward(&self, input: &Matrix) -> Matrix {
+
         let mut output = input.clone();
+
+// Before convolution
+println!("Input to CNN: {}x{}", output.rows, output.cols);
 
         // Apply Convolutional Layers
         for layer in &self.convolution_layers {
@@ -529,10 +533,26 @@ impl Model {
             output = self.apply_convolution(&output, layer);
         }
 
+
+// Before pooling
+println!("Before pooling: {}x{}.  Pooling - type:{:?}, size:{}, stride:{}", output.rows, output.cols, self.pooling_type, self.pooling_size, self.pooling_stride);
+
+
         // Apply Pooling ONCE after all convolutions (not per-layer)
-        output = self.apply_pooling(&output, self.pooling_type, self.pooling_size, self.pooling_stride);
-let num_features = output.rows * output.cols; // Total extracted features
-output = Matrix::new(1, num_features, output.data.clone()); // Reshape to a row vector
+        output = self.apply_pooling(
+            &output, 
+            self.pooling_type, 
+            self.pooling_size, 
+            self.pooling_stride
+        );
+
+// Before convolution
+println!("After pooling: {}x{}", output.rows, output.cols);
+        
+        let num_features = output.rows * output.cols; // Total extracted features
+println!("num_features: {}", num_features);
+
+        output = Matrix::new(1, num_features, output.data.clone()); // Reshape to a row vector
         // Apply Fully Connected (Dense) Layers
         for layer in &self.dense_layers {
             println!(
@@ -561,17 +581,26 @@ output = Matrix::new(1, num_features, output.data.clone()); // Reshape to a row 
             let output_cols = (input.cols - kernel_size + 2 * padding) / stride_size + 1;
             let mut output_data = vec![0.0; output_rows * output_cols * num_filters];
 
-            let limit = num_filters - kernel_size;
-            for filter_idx in (0..limit).step_by(stride_size) {
-                let kernel_size = layer.get_kernel_size().expect("Kernel size missing in convolutional layer");
-                let kernel = match layer.weights.get_filter(filter_idx, kernel_size) {
-                    Ok(kernel) => kernel,
-                    Err(err) => panic!("Error extracting filter: {}", err), 
-                };
-                let conv_result = input.convolve(&kernel, stride_size, self.padding.to_usize());
+            let mut patch_idx = 0; // Track position in output_data
 
-                let offset = filter_idx * output_rows * output_cols;
-                output_data[offset..offset + output_rows * output_cols].copy_from_slice(&conv_result.data);
+            // Slide the filter over the image
+            for row in (0..input.rows - kernel_size).step_by(stride_size) {
+                for col in (0..input.cols - kernel_size).step_by(stride_size) {
+                    // Extract the 4x4 patch
+                    let patch = match input.get_filter(row, col, kernel_size) {
+                        Ok(patch) => patch,
+                        Err(err) => panic!("Error extracting filter: {}", err),
+                    };
+
+                    // Compute dot product with each filter row in weights
+                    for filter_idx in 0..num_filters {
+                        let filter_row = layer.weights.slice(filter_idx, filter_idx + 1).transpose();
+                        let bias = layer.biases.data[filter_idx]; // Get corresponding bias
+                        let conv_value = patch.dot(&filter_row).data[0] + bias;
+                        output_data[patch_idx] = conv_value; // Store result
+                        patch_idx += 1;
+                    }
+                }
             }
 
             Matrix::new(output_rows, output_cols * num_filters, output_data)
@@ -580,7 +609,7 @@ output = Matrix::new(1, num_features, output.data.clone()); // Reshape to a row 
         }
     }
 
-    fn apply_dense(&self, output: &Matrix, layer: &layr::Layer) -> Matrix {
+        fn apply_dense(&self, output: &Matrix, layer: &layr::Layer) -> Matrix {
         if let layr::LayerType::Dense = layer.layer_type {
         println!(
             "apply_dense Debug: output shape = {}x{}, layer.weights shape = {}x{}, layer.biases shape = {}x{}",
