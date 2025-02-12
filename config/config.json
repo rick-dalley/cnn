@@ -7,7 +7,7 @@
   "clipping": 2,
   "clip_threshold": 0.125,
   "temperature_scaling": 1.0,
-  "batch_size": 16,
+  "batch_size": 8,
   "num_classes": 10,
   "num_layers": 6,
   "hidden_layer_scaling": 1,

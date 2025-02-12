@@ -531,7 +531,8 @@ impl Model {
 
         // Apply Pooling ONCE after all convolutions (not per-layer)
         output = self.apply_pooling(&output, self.pooling_type, self.pooling_size, self.pooling_stride);
-
+let num_features = output.rows * output.cols; // Total extracted features
+output = Matrix::new(1, num_features, output.data.clone()); // Reshape to a row vector
         // Apply Fully Connected (Dense) Layers
         for layer in &self.dense_layers {
             println!(
@@ -581,6 +582,12 @@ impl Model {
 
     fn apply_dense(&self, output: &Matrix, layer: &layr::Layer) -> Matrix {
         if let layr::LayerType::Dense = layer.layer_type {
+        println!(
+            "apply_dense Debug: output shape = {}x{}, layer.weights shape = {}x{}, layer.biases shape = {}x{}",
+            output.rows, output.cols,
+            layer.weights.rows, layer.weights.cols,
+            layer.biases.rows, layer.biases.cols
+        );
             let mut result = output.dot(&layer.weights) + &layer.biases;
             result = result.apply(&|x| layer.activation_fn.apply(x));
             result
