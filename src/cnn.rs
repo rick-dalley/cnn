@@ -4,9 +4,9 @@ use std::fs::File;
 use std::io::{BufReader, Error as IoError};
 use std::str::FromStr;
 use serde_json::{from_reader, Value};
-use crate::{loadr, log};
+use crate::{loadr, log, layr};
 use matrix::matrix::{Dot, Matrix}; 
-use activations::activations::{get_activation_and_derivative, ActivationTrait};
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum Padding {
@@ -91,6 +91,40 @@ impl FromStr for WeightInitialization {
     }
 }
 
+// #[derive(Debug, Clone)]
+// pub struct Layer {
+//     pub weights: Matrix,
+//     pub biases: Matrix,
+//     pub stride_size: usize,
+//     pub kernel_size: usize,
+//     pub activation_fn: Box<dyn ActivationTrait>,
+//     pub derivative_fn: Box<dyn ActivationTrait>
+// }
+
+// impl Layer {
+//     // Constructor for initializing a new layer with random weights and zero biases
+//     pub fn new(
+//         input_dim: usize, 
+//         output_dim: usize, 
+//         stride_size: usize, 
+//         kernel_size: usize,
+//         function_family: String, 
+//         alpha: f64, 
+//         lambda:f64
+//     ) -> Self {
+//         let (activation_fn, derivative_fn) = activations::activations::get_activation_and_derivative(function_family, alpha, lambda);
+//         Self {
+//             weights: Matrix::random(input_dim, output_dim),
+//             biases: Matrix::zeros(1, output_dim),
+//             stride_size,
+//             kernel_size,
+//             activation_fn,
+//             derivative_fn
+
+//         }
+//     }
+// }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Model {
     pub location: String,
@@ -130,21 +164,19 @@ pub struct Model {
     pub dropout_rate: f64,
     pub weight_initialization: WeightInitialization,
     
-    // Optimization
+    // optimization
     pub optimizer: Optimizer,
 
-     #[serde(skip)] // Prevent serialization issues
-    pub activation_fn: Box<dyn ActivationTrait>,
-
+    // layers
     #[serde(skip)]
-    pub derivative_fn: Box<dyn ActivationTrait>,
+    pub dense_layers: Vec<layr::Layer>,
+    #[serde(skip)]
+    pub convolution_layers: Vec<layr::Layer>,
 
 }
 
 impl Default for Model {
     fn default() -> Self {
-        let (activation_fn, derivative_fn) = get_activation_and_derivative("sigmoid".to_string(), 0.01, 1.0);
-
         Self {
             location: String::new(),
             epochs: 10,
@@ -162,10 +194,7 @@ impl Default for Model {
             hidden_layer_scaling: 1,
             model_dimensions: 128,
             hidden_dimensions: 64,
-
-            activation_fn,  
-            derivative_fn,  
-
+            
             // CNN Defaults
             num_conv_layers: 0,                // No convolutional layers by default
             conv_filters: vec![],              // No filters
@@ -188,12 +217,17 @@ impl Default for Model {
 
             // Optimization
             optimizer: Optimizer::Adam,        // Adam is a common optimizer
+            dense_layers:Vec::new(),
+            convolution_layers:Vec::new(),
+
         }
     }
 }
 
 
 impl Model {
+
+    //initialize from json
     pub fn from_json(path: &str) -> Result<Self, IoError> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
@@ -330,10 +364,28 @@ impl Model {
             .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as usize)).collect())
             .unwrap_or_else(|| vec![128, 64]); // Default values for fully connected layers
         
-        let activation_fn_name = json_value.get("activation_fn_name")
+            
+        //prepare the layers
+        let layer_function_strategy = json_value.get("layer_function_strategy")
             .and_then(Value::as_str)
-            .unwrap_or("relu")
+            .unwrap_or("default")
             .to_string();
+
+        let approach = json_value.get("approach")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .unwrap_or_else(|| "default".to_string());  // Provide a sensible default
+
+        //select the activation function
+        let dense_activation_fn = json_value.get("dense_activation_fn")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .unwrap_or_else(|| "relu".to_string());  // Default to "relu"
+
+        let conv_activation_fn = json_value.get("conv_activation_fn")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .unwrap_or_else(|| "relu".to_string());  // Default to "relu"
 
         let alpha = json_value.get("alpha")
             .and_then(Value::as_f64)
@@ -343,8 +395,34 @@ impl Model {
             .and_then(Value::as_f64)
             .unwrap_or(1.0); // Default for SELU
 
+        let (dense_family, conv_family) = match layer_function_strategy.as_str() {
+            "default" => ("relu", "relu"),
+            "approach" => match approach.as_str() {
+                "resnet" => ("relu","relu"), 
+                "vgg" => ("tanh","tanh"),
+                _ => panic!("Unknown approach: {}", approach),
+            },
+            "custom" => (dense_activation_fn.as_str(), conv_activation_fn.as_str()),
+            _ => panic!("Unknown layer function strategy: {}", layer_function_strategy),
+        };
 
-        let (activation_fn, derivative_fn) = get_activation_and_derivative(activation_fn_name.clone(), alpha, lambda);
+        let dense_layers = Self::initialize_dense_layers(
+            num_classes, 
+            &dense_units, 
+            dense_family, 
+            alpha, 
+            lambda
+        );
+
+        let convolution_layers = Self::initialize_convolutional_layers(
+            &conv_filters, 
+            &kernel_sizes, 
+            &stride_sizes, 
+            conv_family, 
+            alpha, 
+            lambda
+        );
+
         // Return parsed config as `Model`
         let model = Self {
             location,
@@ -376,14 +454,60 @@ impl Model {
             dropout_rate,
             weight_initialization,
             optimizer,
-            activation_fn,
-            derivative_fn
+            dense_layers,
+            convolution_layers,
         };
+
         Ok(model)
     }
 
+    pub fn initialize_dense_layers(
+        num_classes: usize, 
+        dense_units: &[usize], 
+        dense_family: &str, 
+        alpha: f64, 
+        lambda: f64
+    ) -> Vec<layr::Layer> {
+        let mut layers = Vec::new();
+        let mut input_dim = num_classes; // First layer input is num_classes
 
-    pub fn train(&self) {
+        for &units in dense_units {
+            layers.push(layr::Layer::new_dense(input_dim, units, dense_family.to_string(), alpha, lambda));
+            input_dim = units; // Next layer takes current layer’s output
+        }
+
+        layers
+    }
+
+    pub fn initialize_convolutional_layers(
+        conv_filters: &[usize], 
+        kernel_sizes: &[usize], // ✅ Add kernel sizes
+        stride_sizes: &[usize], // ✅ Add stride sizes
+        conv_family: &str, 
+        alpha: f64, 
+        lambda: f64
+    ) -> Vec<layr::Layer> {
+        let mut layers = Vec::new();
+
+        for (i, &filters) in conv_filters.iter().enumerate() {
+            let kernel_size = kernel_sizes.get(i).copied().unwrap_or(3); // Default: 3x3 kernels
+            let stride = stride_sizes.get(i).copied().unwrap_or(1); // Default stride: 1
+
+            layers.push(layr::Layer::new_convolutional(
+                filters, 
+                kernel_size,  // ✅ Use correct kernel size
+                stride,       // ✅ Use correct stride
+                kernel_size, 
+                conv_family.to_string(),
+                alpha,
+                lambda
+            ));
+        }
+
+        layers
+    }
+
+    pub fn train(&mut self) {
         println!("Training...");
         let location = self.location.as_str();
         let log_location = "./logs/log.csv";
@@ -423,7 +547,7 @@ impl Model {
                 let predictions = self.forward(&batch_data);
                 let loss = self.calculate_loss(&predictions, &batch_labels);
                 self.backward(&predictions, &batch_labels, &batch_data);
-                self.update_weights();
+                // self.update_weights();
 
                 log::matrix_stats(epoch, batch_number, &predictions, &log_location, "output", squelch);
 
@@ -438,43 +562,25 @@ impl Model {
     }
 
     pub fn forward(&self, input: &Matrix) -> Matrix {
-
         let mut output = input.clone();
 
         // Apply Convolutional Layers
-        for (i, &num_filters) in self.conv_filters.iter().enumerate() {
-
-            output = self.apply_convolution(
-                &output, 
-                num_filters, 
-                self.kernel_sizes[i], 
-                self.stride_sizes[i]
-            );
-
-            output = self.apply_activation(&output);
-            
-            // Apply Pooling
-            output = self.apply_pooling(
-                &output, 
-                self.pooling_type, 
-                self.pooling_size, 
-                self.pooling_stride
-            );
+        for layer in &self.convolution_layers {
+            // Apply convolution with layer-specific stride
+            output = self.apply_convolution(&output, layer);
         }
+
+        // Apply Pooling ONCE after all convolutions (not per-layer)
+        output = self.apply_pooling(&output, self.pooling_type, self.pooling_size, self.pooling_stride);
 
         // Apply Fully Connected (Dense) Layers
-        let mut dense_output = output.clone();
-
-        for &units in &self.dense_units {
-            dense_output = self.apply_dense(&dense_output, units);
-            dense_output = self.apply_activation(&dense_output);
+        for layer in &self.dense_layers {
+            output = self.apply_dense(&output, &layer)
         }
-
-        //return final output (logits)
-        dense_output
-
+        // Return final output (logits)
+        output
     }
-
+ 
     // apply_pooling
     fn apply_pooling(&self, input: &Matrix, pooling_type:PoolingType, pool_size:usize, pool_stride: usize) -> Matrix{
         match pooling_type {
@@ -483,56 +589,38 @@ impl Model {
         }
     }
 
-    //apply_convolution
-    fn apply_convolution(&self, input: &Matrix, num_filters: usize, kernel_size: usize, stride_size: usize) -> Matrix {
-        //convolve the matrix
-        let conv_result = input.convolve(
-            &Matrix::random(kernel_size, kernel_size),
-            stride_size,
-            self.padding.to_usize()
-        );
+    fn apply_convolution(&self, input: &Matrix, layer: &layr::Layer) -> Matrix {
+        if let layr::LayerType::Convolutional { stride_size, kernel_size } = layer.layer_type {
+            let num_filters = layer.weights.rows; // Number of filters = rows in weights matrix
 
-        let output_rows = conv_result.rows;  
-        let output_cols = conv_result.cols;  
+            let output_rows = (input.rows - kernel_size) / stride_size + 1;
+            let output_cols = (input.cols - kernel_size) / stride_size + 1;
 
-        let mut output_data = vec![0.0; output_rows * output_cols * num_filters];
+            let mut output_data = vec![0.0; output_rows * output_cols * num_filters];
 
-        for filter_idx in 0..num_filters {
-            let kernel = Matrix::random(kernel_size, kernel_size);
-            let conv_result = input.convolve(&kernel, stride_size, self.padding.to_usize());
+            for filter_idx in 0..num_filters {
+                let kernel_size = layer.get_kernel_size().expect("Kernel size missing in convolutional layer");
+                let kernel = layer.weights.get_filter(filter_idx, kernel_size);
+                let conv_result = input.convolve(&kernel, stride_size, self.padding.to_usize());
 
-            // Ensure sizes match before copying
-            if conv_result.data.len() != output_rows * output_cols {
-                panic!(
-                    "Size mismatch! conv_result.data has {} elements, but expected {}",
-                    conv_result.data.len(),
-                    output_rows * output_cols
-                );
+                let offset = filter_idx * output_rows * output_cols;
+                output_data[offset..offset + output_rows * output_cols].copy_from_slice(&conv_result.data);
             }
-        
-            let offset = filter_idx * output_rows * output_cols;
-            output_data[offset..offset + output_rows * output_cols].copy_from_slice(&conv_result.data);
+
+            Matrix::new(output_rows, output_cols * num_filters, output_data)
+        } else {
+            panic!("apply_convolution() called on a non-convolutional layer!");
         }
-
-        Matrix::new(output_rows * num_filters, output_cols, output_data)
-
     }
 
-
-    // apply_activation
-    fn apply_activation(&self, input: &Matrix) -> Matrix {
-        input.map(|x| self.activation_fn.apply(x)) 
-    }
-
-    fn apply_dense(&self, input: &Matrix, units: usize) -> Matrix {
-        // Generate weight and bias matrices
-        let weights = Matrix::random(input.cols, units); // Using your `Matrix::random`
-        let bias = Matrix::zeros(input.rows, units); // Adjust bias to match output rows
-
-        // 🚀 Perform matrix multiplication using your `Dot` trait
-        let output = input.dot(&weights) + bias; // Bias is now correctly sized
-
-        output
+    fn apply_dense(&self, output: &Matrix, layer: &layr::Layer) -> Matrix {
+        if let layr::LayerType::Dense = layer.layer_type {
+            let mut result = output.dot(&layer.weights) + &layer.biases;
+            result = result.apply(&|x| layer.activation_fn.apply(x));
+            result
+        } else {
+            panic!("Dense layer processing called on a non-dense layer!");
+        }
     }
 
     fn calculate_loss(&self, predictions: &Matrix, labels: &[usize]) -> f64 {
@@ -552,35 +640,50 @@ impl Model {
         loss
     }
 
-    fn backward(&mut self, predictions: &Matrix, batch_labels: &Vec<usize>, batch_data: &Matrix){
-        //convert batch_labels (Vec<usize>) to a one-hot encoded Matrix
+    fn backward(
+        &mut self, 
+        predictions: &Matrix, 
+        batch_labels: &Vec<usize>, 
+        batch_data: &Matrix
+    ) {
+        // Convert labels into one-hot matrix
         let batch_labels_matrix = Matrix::from_labels(batch_labels, predictions.cols);
 
-        // compute dL/dO (Cross-Entropy Loss Gradient)
+        // Compute dL/dO (Cross-Entropy Loss Gradient)
         let d_loss = predictions - &batch_labels_matrix;
-        // compute Activation Derivative
-        let d_activation = match self.activation_fn {
-            Activation::Sigmoid => predictions.apply(&|x| x * (1.0 - x)),
-            Activation::ReLU => predictions.apply(&|x| if x > 0.0 { 1.0 } else { 0.0 }),
-            _ => panic!("Unsupported activation!"),
-        };
-        let d_output = d_loss * d_activation;
 
-        // compute gradients for dense layer
-        let d_weights = batch_data.transpose().dot(&d_output);
-        let d_biases = d_output.sum_axis(0);
+        // Backpropagation through dense layers (iterate in reverse)
+        let mut d_output = d_loss.clone();
+        
+        for layer in self.dense_layers.iter_mut().rev() {
+            let d_activation = d_output.apply(&|x| layer.derivative_fn.apply(x));
+            let d_weights = batch_data.transpose().dot(&d_activation);
+            let d_biases = d_activation.sum_axis(matrix::matrix::Orientation::ColumnWise);
 
-        //compute gradients for convolutional layers
-        let mut conv_gradients = Vec::new();
-        for i in 0..self.num_filters {
-            let d_filter = convolve(&batch_data, &d_output, 1, 0);
-            conv_gradients.push(d_filter);
+            // ✅ Directly update weights and biases
+            layer.weights = &layer.weights - &(d_weights * self.learning_rate);
+            layer.biases = &layer.biases - &(d_biases * self.learning_rate);
+
+            // Propagate error backward
+            d_output = d_activation.dot(&layer.weights.transpose());
         }
 
-        // store gradients
-        self.dense_gradients = d_weights;
-        self.bias_gradients = d_biases;
-        self.conv_gradients = conv_gradients;
+        // Backpropagation through convolutional layers (iterate in reverse)
+        let mut conv_gradients = Vec::new();
+        for layer in self.convolution_layers.iter_mut().rev() {
+            let d_activation = d_output.apply(&|x| layer.derivative_fn.apply(x));
+            let d_filter = batch_data.convolve(&d_activation, 1, 0); // Assuming `convolve` exists
+
+            // Store convolutional gradients
+            conv_gradients.push(d_filter.clone());
+
+            // ✅ Directly update weights and biases
+            layer.weights = &layer.weights - &(d_filter * self.learning_rate);
+            layer.biases = &layer.biases - &(d_activation.sum_axis(matrix::matrix::Orientation::ColumnWise) * self.learning_rate);
+
+            // Propagate error backward
+            d_output = d_activation.dot(&layer.weights.transpose());
+        }
     }
 
     fn update_weights(&self) {

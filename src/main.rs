@@ -1,6 +1,7 @@
 pub mod cnn;
 pub mod log;
 pub mod loadr;
+pub mod layr;
 
 use std::process;
 use cnn::Model; // Ensure `cnn_model` is the correct module path
@@ -10,7 +11,7 @@ fn main() {
     let config_path = "./config/config.json";
 
     // Load CNN model from JSON
-    let cnn_model = match Model::from_json(config_path) {
+    let mut cnn_model = match Model::from_json(config_path) {
         Ok(model) => model,
         Err(e) => {
             eprintln!("Error loading CNN model: {}", e);
