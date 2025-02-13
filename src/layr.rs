@@ -30,19 +30,35 @@ impl Layer {
             _ => None, // Dense layers don't have kernel_size
         }
     }
+    pub fn get_weights(&self) -> &Matrix {
+        &self.weights
+    }
+
+    pub fn get_biases(&self) -> &Matrix {
+        &self.biases
+    }
+
+    pub fn set_weights(&mut self, weights: Matrix) {
+        self.weights = weights;
+    }
+
+    pub fn set_biases(&mut self, biases: Matrix) {
+        self.biases = biases;
+    }
+    
     // Constructor for Dense Layer
     pub fn new_dense(
-        input_dim: usize,
-        output_dim: usize,
         function_family: String,
         alpha: f64,
         lambda: f64,
     ) -> Self {
         let (activation_fn, derivative_fn) =
             activations::activations::get_activation_and_derivative(function_family, alpha, lambda);
+            let weights = Matrix::new(0, 0, Vec::new());
+            let biases = Matrix::new(0, 0, Vec::new());
         Self {
-            weights: Matrix::random(input_dim, output_dim),
-            biases: Matrix::zeros(1, output_dim),
+            weights,
+            biases,
             activation_fn,
             derivative_fn,
             layer_type: LayerType::Dense, // No additional properties for Dense

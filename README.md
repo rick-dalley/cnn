@@ -155,6 +155,32 @@ This ensures flexibility while maintaining a structured way to configure layer f
 - Optimizing matrix operations for parallel execution may improve performance in future updates.
 - Running on a machine with an **NVIDIA GPU** would be more efficient than a Mac for large-scale training.
 
+## Flattening Strategy Configuration
+
+### Example Config Entry:
+
+```json
+"flattening_strategy": "mean_pooling"
+```
+
+### Supported Values:
+
+| Strategy         | Description                                                      |
+| ---------------- | ---------------------------------------------------------------- |
+| `"mean_pooling"` | Averages groups of values to reduce feature vector size.         |
+| `"strided"`      | Picks every `n`-th value to reduce feature vector size quickly.  |
+| `"conv_1x1"`     | Applies a 1x1 convolution to learn the best feature compression. |
+
+### Purpose:
+
+The `flattening_strategy` determines how the feature maps are processed before they are fed into the dense layers. This allows for flexibility in model optimization and testing different strategies for better performance.
+
+- **`mean_pooling`**: Suitable when reducing the dimensionality while preserving the overall distribution of values.
+- **`strided`**: Works well when needing a fast, deterministic downsampling approach.
+- **`conv_1x1`**: Allows the network itself to learn the best compression method, providing more adaptability.
+
+This configuration enables easy experimentation with different flattening methods to optimize for speed, accuracy, or resource constraints.
+
 ## Future Work
 
 - Implement parallel computation for matrix operations.

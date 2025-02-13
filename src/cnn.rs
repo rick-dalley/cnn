@@ -5,7 +5,7 @@ use std::io::{BufReader, Error as IoError};
 use std::str::FromStr;
 use serde_json::{from_reader, Value};
 use crate::{loadr, log, layr};
-use matrix::matrix::{Dot, Matrix}; 
+use matrix::matrix::{Dot, Matrix, FlatteningStrategy}; 
 
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +121,7 @@ pub struct Model {
     pub pooling_type: PoolingType,
     pub pooling_size: usize,
     pub pooling_stride: usize,
-    
+    pub flattening_strategy: FlatteningStrategy,
     // Fully Connected Layers
     pub num_dense_layers: usize,
     pub dense_units: Vec<usize>,
@@ -171,7 +171,7 @@ impl Default for Model {
             pooling_type: PoolingType::Max,    // Default pooling type
             pooling_size: 2,                   // Typical default pooling size
             pooling_stride: 2,                 // Typical default stride
-
+            flattening_strategy:FlatteningStrategy::MeanPooling,
             // Dense Layer Defaults
             num_dense_layers: 2,               // A reasonable number of dense layers
             dense_units: vec![128, 64],        // Common default fully connected layers
@@ -297,6 +297,13 @@ impl Model {
             .and_then(Value::as_u64)
             .unwrap_or(2048) as usize;
 
+        let flattening_strategy_name = json_value.get("flattening_strategy")
+            .and_then(Value::as_str)
+            .unwrap_or("mean_pooling")
+            .to_string();
+
+        let flattening_strategy = FlatteningStrategy::from_str(&flattening_strategy_name);
+
         let num_dense_layers =  json_value.get("num_dense_layers")
             .and_then(Value::as_u64)
             .unwrap_or(2048) as usize;
@@ -368,7 +375,6 @@ impl Model {
         };
 
         let dense_layers = Self::initialize_dense_layers(
-            num_classes, 
             &dense_units, 
             dense_family, 
             alpha, 
@@ -409,6 +415,7 @@ impl Model {
             pooling_type,
             pooling_size,
             pooling_stride,
+            flattening_strategy,
             num_dense_layers,
             dense_units,
             dropout_rate,
@@ -422,18 +429,15 @@ impl Model {
     }
 
     pub fn initialize_dense_layers(
-        num_classes: usize, 
         dense_units: &[usize], 
         dense_family: &str, 
         alpha: f64, 
         lambda: f64
     ) -> Vec<layr::Layer> {
         let mut layers = Vec::new();
-        let mut input_dim = num_classes; // First layer input is num_classes
 
-        for &units in dense_units {
-            layers.push(layr::Layer::new_dense(input_dim, units, dense_family.to_string(), alpha, lambda));
-            input_dim = units; // Next layer takes current layer’s output
+        for &_units in dense_units {
+            layers.push(layr::Layer::new_dense(dense_family.to_string(), alpha, lambda));
         }
 
         layers
@@ -498,14 +502,26 @@ impl Model {
 
             let mut batch_number = 0;
             for batch_start in (0..rows).step_by(batch_size){
+println!("Getting the batch");
+                // Getting batch
                 let batch_end = (batch_start + batch_size).min(shuffled_training.rows);
-                // Extract a batch from the shuffled training data
                 let batch_data = shuffled_training.slice(batch_start, batch_end);
                 let batch_labels = shuffled_labels[batch_start..batch_end].to_vec(); // Extract labels
 
+println!("performing forward");
+                // predict
                 let predictions = self.forward(&batch_data);
+
+println!("calculating loss");
+                //calculate loss
                 let loss = self.calculate_loss(&predictions, &batch_labels);
+
+println!("performing backward");
+                //perform backward propagation
                 self.backward(&predictions, &batch_labels, &batch_data);
+
+println!("updating weights");
+                //upate weights
                 self.update_weights();
 
                 log::matrix_stats(epoch, batch_number, &predictions, &log_location, "output", squelch);
@@ -520,102 +536,156 @@ impl Model {
         
     }
 
-    pub fn forward(&self, input: &Matrix) -> Matrix {
-
-        let mut output = input.clone();
-
-// Before convolution
-println!("Input to CNN: {}x{}", output.rows, output.cols);
+    pub fn forward(&mut self, input: &Matrix) -> Matrix {
 
         // Apply Convolutional Layers
+       let mut feature_maps = vec![input.clone()]; // Start with the input matrix as the first feature map
+
+        let mut layer_count = 1;
+        println!("Applying convolutions");
+
         for layer in &self.convolution_layers {
-            // Apply convolution with layer-specific stride
-            output = self.apply_convolution(&output, layer);
+            println!("Applying convolutions Layer:{}", layer_count);
+
+            let mut new_feature_maps = Vec::new();
+            
+            // Process only the current feature maps and replace them
+            for feature_map in &feature_maps {
+                let conv_maps = self.apply_convolution(feature_map, layer);
+                new_feature_maps = conv_maps; // Direct replacement instead of extend
+            }
+
+            feature_maps = new_feature_maps; // Keep only the latest feature maps
+            layer_count += 1;
         }
 
-
-// Before pooling
-println!("Before pooling: {}x{}.  Pooling - type:{:?}, size:{}, stride:{}", output.rows, output.cols, self.pooling_type, self.pooling_size, self.pooling_stride);
-
-
-        // Apply Pooling ONCE after all convolutions (not per-layer)
-        output = self.apply_pooling(
-            &output, 
+        println!("Applying pooling to {} layers on feature_maps of len:{}", layer_count, feature_maps.len());
+        // Apply Pooling
+        let pooled_maps = self.apply_pooling(
+            &feature_maps, 
             self.pooling_type, 
             self.pooling_size, 
             self.pooling_stride
         );
 
-// Before convolution
-println!("After pooling: {}x{}", output.rows, output.cols);
-        
-        let num_features = output.rows * output.cols; // Total extracted features
-println!("num_features: {}", num_features);
+        // Get the expected input size for the first dense layer
+        let expected_dense_input_size = self.dense_units.first().copied().unwrap_or(512);
 
-        output = Matrix::new(1, num_features, output.data.clone()); // Reshape to a row vector
+        println!("Flattening the feature map - expected_dense_input_size:{}", expected_dense_input_size,);
+        // Apply the selected flattening strategy
+        let flattened_features = match self.flattening_strategy {
+            FlatteningStrategy::MeanPooling => Matrix::mean_pooling_flatten(pooled_maps, expected_dense_input_size),
+            FlatteningStrategy::Strided => Matrix::strided_flatten(pooled_maps, expected_dense_input_size),
+            FlatteningStrategy::Convolution => Matrix::convolution_flatten(pooled_maps, expected_dense_input_size),
+        };
+        
+        println!("flattened_features - rows:{} x {} cols", flattened_features.rows, flattened_features.cols);
+   
+        for (i, layer) in self.dense_layers.iter_mut().enumerate() {
+            if layer.weights.rows == 0 || layer.weights.cols == 0 {
+                let input_dim = if i == 0 {
+                    flattened_features.cols // First dense layer takes the flattened feature map
+                } else {
+                    self.dense_units[i - 1] // Subsequent layers use the previous layer's output
+                };
+
+                let output_dim = self.dense_units[i]; // Get the output size from config
+
+                layer.weights = Matrix::random(input_dim, output_dim);
+                layer.biases = Matrix::zeros(1, output_dim);
+
+                println!(
+                    "Initialized Dense Layer {}: weights {}x{}, biases {}x{}",
+                    i, layer.weights.rows, layer.weights.cols, layer.biases.rows, layer.biases.cols
+                );
+            }
+        }
+
+ 
+        println!("Applying dense");
+        let mut output = flattened_features.clone();
+
         // Apply Fully Connected (Dense) Layers
         for layer in &self.dense_layers {
-            println!(
-                "Before apply_dense: output shape = {}x{}, layer.weights shape = {}x{}",
-                output.rows, output.cols, layer.weights.rows, layer.weights.cols
-            );
-            output = self.apply_dense(&output, &layer)
+            output = self.apply_dense(&output, &layer);
         }
+
         // Return final output (logits)
         output
     }
- 
-    // apply_pooling
-    fn apply_pooling(&self, input: &Matrix, pooling_type:PoolingType, pool_size:usize, pool_stride: usize) -> Matrix{
-        match pooling_type {
-            PoolingType::Max => input.max_pooling(pool_size, pool_stride),
-            PoolingType::Average => input.avg_pooling(pool_size, pool_stride),
-        }
+
+    // apply pooling
+    fn apply_pooling(&self, 
+        feature_maps: &Vec<Matrix>, 
+        pooling_type: PoolingType, 
+        pool_size: usize, 
+        pool_stride: usize) -> Vec<Matrix> {
+
+        let pooled_maps: Vec<Matrix> = feature_maps.iter()
+            .map(|feature_map| match pooling_type {
+                PoolingType::Max => feature_map.max_pooling(pool_size, pool_stride),
+                PoolingType::Average => feature_map.avg_pooling(pool_size, pool_stride),
+            })
+            .collect();
+
+        pooled_maps
     }
 
-    fn apply_convolution(&self, input: &Matrix, layer: &layr::Layer) -> Matrix {
+    // apply convolution
+    fn apply_convolution(&self, input: &Matrix, layer: &layr::Layer) -> Vec<Matrix> {
         if let layr::LayerType::Convolutional { stride_size, kernel_size } = layer.layer_type {
-            let num_filters = layer.weights.rows; // Number of filters = rows in weights matrix
+            let num_filters = layer.weights.rows; // Number of filters
             let padding = self.padding.to_usize();
+
             let output_rows = (input.rows - kernel_size + 2 * padding) / stride_size + 1;
             let output_cols = (input.cols - kernel_size + 2 * padding) / stride_size + 1;
-            let mut output_data = vec![0.0; output_rows * output_cols * num_filters];
 
-            let mut patch_idx = 0; // Track position in output_data
+            let mut feature_maps = Vec::with_capacity(num_filters);
 
-            // Slide the filter over the image
+            // Initialize feature maps for each filter
+            for _ in 0..num_filters {
+                feature_maps.push(Matrix::zeros(output_rows, output_cols));
+            }
+
+            // Slide the kernel across the image
             for row in (0..input.rows - kernel_size).step_by(stride_size) {
                 for col in (0..input.cols - kernel_size).step_by(stride_size) {
-                    // Extract the 4x4 patch
+                    // Extract the kernel-sized patch from the input
                     let patch = match input.get_filter(row, col, kernel_size) {
                         Ok(patch) => patch,
                         Err(err) => panic!("Error extracting filter: {}", err),
                     };
 
-                    // Compute dot product with each filter row in weights
+                    // Apply each filter to the patch
                     for filter_idx in 0..num_filters {
                         let filter_row = layer.weights.slice(filter_idx, filter_idx + 1).transpose();
-                        let bias = layer.biases.data[filter_idx]; // Get corresponding bias
+                        let bias = layer.biases.data[filter_idx];
+
                         let conv_value = patch.dot(&filter_row).data[0] + bias;
-                        output_data[patch_idx] = conv_value; // Store result
-                        patch_idx += 1;
+
+                        // Determine output index
+                        let output_row_idx = row / stride_size;
+                        let output_col_idx = col / stride_size;
+
+                        feature_maps[filter_idx].data[output_row_idx * output_cols + output_col_idx] = conv_value;
                     }
                 }
             }
 
-            Matrix::new(output_rows, output_cols * num_filters, output_data)
+            feature_maps
         } else {
             panic!("apply_convolution() called on a non-convolutional layer!");
         }
     }
 
-        fn apply_dense(&self, output: &Matrix, layer: &layr::Layer) -> Matrix {
+    fn apply_dense(&self, output: &Matrix, layer: &layr::Layer) -> Matrix {
         if let layr::LayerType::Dense = layer.layer_type {
-        println!(
-            "apply_dense Debug: output shape = {}x{}, layer.weights shape = {}x{}, layer.biases shape = {}x{}",
-            output.rows, output.cols,
-            layer.weights.rows, layer.weights.cols,
-            layer.biases.rows, layer.biases.cols
+
+            println!(
+        "apply_dense Debug: output shape = {}x{}, layer.weights shape = rows:{} x cols:{}, layer.biases shape = {}x{}",
+        output.rows, output.cols,
+        layer.weights.rows, layer.weights.cols,
+        layer.biases.rows, layer.biases.cols
         );
             let mut result = output.dot(&layer.weights) + &layer.biases;
             result = result.apply(&|x| layer.activation_fn.apply(x));
@@ -691,7 +761,5 @@ println!("num_features: {}", num_features);
     fn update_weights(&self) {
 
     }
-
-
 
 }
