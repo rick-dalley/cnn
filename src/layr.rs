@@ -46,7 +46,7 @@ impl Layer {
         self.biases = biases;
     }
 
-    // Constructor for Dense Layer
+    // construct the dense layer
     pub fn new_dense(
         function_family: String,
         alpha: f64,
@@ -65,7 +65,7 @@ impl Layer {
         }
     }
 
-    // Constructor for Convolutional Layer
+    // construct the convolutional layer
     pub fn new_convolutional(
         num_filters: usize,  
         kernel_size: usize,
