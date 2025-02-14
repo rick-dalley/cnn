@@ -4,13 +4,13 @@ pub mod loadr;
 pub mod layr;
 
 use std::process;
-use cnn::Model; // Ensure `cnn_model` is the correct module path
+use cnn::Model; // ensure `cnn_model` is the correct module path
 
 
 fn main() {
     let config_path = "./config/config.json";
 
-    // Load CNN model from JSON
+    // load the CNN model configuration from JSON
     let mut cnn_model = match Model::from_json(config_path) {
         Ok(model) => model,
         Err(e) => {
@@ -19,8 +19,9 @@ fn main() {
         }
     };
 
-    // Log CNN model to the screen
+    // uncommenbt tge next line log the CNN model to the screen
     // log::model(&cnn_model, "", log::LogTo::Screen);
 
+    //train the model
     cnn_model.train();
 }

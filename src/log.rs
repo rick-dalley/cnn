@@ -1,12 +1,13 @@
 use std::io::Write;
 use std::fs::OpenOptions;
+use std::fmt::Debug;
 use std::sync::Once;
-use matrix::matrix::Matrix;
+use matrix::Matrix;
 use std::process;
 use crate::cnn::Model;
 
 
-/// Enum to define logging output type
+/// enum to define logging output type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogTo {
     Screen,
@@ -18,7 +19,7 @@ pub fn memory_usage(tag: &str) {
     let pid = process::id();
     let output = std::process::Command::new("ps")
         .arg("-o")
-        .arg("rss=") // Resident Set Size (actual memory in KB)
+        .arg("rss=") // resident Set Size (actual memory in KB)
         .arg("-p")
         .arg(format!("{}", pid))
         .output()
@@ -45,7 +46,7 @@ pub fn training_metrics(
     }
     static HEADER_PRINTED: Once = Once::new();
     
-    // Create or open the log file to append
+    // create or open the log file to append
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
@@ -63,7 +64,7 @@ pub fn training_metrics(
 }
 
 pub fn matrix_norms(epoch:usize, iteration:usize, matrix: Matrix, log_location:&str){
-    // Create or open the log file to append
+    // create or open the log file to append
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
@@ -97,17 +98,15 @@ pub fn matrix_stats(epoch:usize, iteration:usize, matrix:&Matrix, log_location: 
 
 }
 
-//log_n_elements
-pub fn n_elements(name:&str, slice:&Vec<f64>, n_elements:usize, log_location: &str){
-
+pub fn n_elements<T: Debug>(name: &str, slice: &[T], n_elements: usize, log_location: &str) {
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
         .open(log_location)
         .expect("Failed to open log file");
 
-    writeln!(file, "{} first {}, {:?}", name,n_elements, &slice[..n_elements.min(slice.len())] ).expect("Could not write to file");
-
+    writeln!(file, "{} first {}, {:?}", name, n_elements, &slice[..n_elements.min(slice.len())])
+        .expect("Could not write to file");
 }
 
 // log_sample
@@ -122,15 +121,15 @@ pub fn sample(name: &str, rows:usize, num_elements:usize, matrix:&Matrix, log_lo
 }
 
 
-/// Logs the model configuration based on the selected log type.
+/// logs the model configuration based on the selected log type.
 pub fn model(model: &Model, log_location: &str, log_to: LogTo) {
     match log_to {
         LogTo::Screen => {
-            // Pretty-print to console
+            // pretty-print to console
             println!("{:#?}", model);
         }
         LogTo::JSON => {
-            // Serialize to JSON and save to a file
+            // serialize to JSON and then save to a file
             let json_output = serde_json::to_string_pretty(&model)
                 .expect("Failed to serialize model config");
 
@@ -152,7 +151,7 @@ pub fn model(model: &Model, log_location: &str, log_to: LogTo) {
                 .open(format!("{}.csv", log_location))
                 .expect("Failed to open log file");
 
-            // Write CSV header only once
+            // write the CSV header only once
             HEADER_PRINTED.call_once(|| {
                 writeln!(file, "model.location,
                 model.epochs,
