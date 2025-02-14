@@ -29,8 +29,8 @@ impl FromStr for Padding {
 impl Padding {
     pub fn to_usize(&self) -> usize {
         match self {
-            Padding::Same => 1,  // Keeps size the same
-            Padding::Valid => 0, // No padding
+            Padding::Same => 1,  
+            Padding::Valid => 0, 
         }
     }
 }
@@ -165,27 +165,27 @@ impl Default for Model {
             hidden_dimensions: 64,
             
             // CNN Defaults
-            num_conv_layers: 0,                // No convolutional layers by default
-            conv_filters: vec![],              // No filters
-            kernel_sizes: vec![],              // No kernels
-            stride_sizes: vec![],              // No strides
-            padding: Padding::Valid,           // Default to "valid" padding
+            num_conv_layers: 0,                
+            conv_filters: vec![],              
+            kernel_sizes: vec![],              
+            stride_sizes: vec![],             
+            padding: Padding::Valid,          
 
             // Pooling Defaults
-            pooling_type: PoolingType::Max,    // Default pooling type
-            pooling_size: 2,                   // Typical default pooling size
-            pooling_stride: 2,                 // Typical default stride
+            pooling_type: PoolingType::Max,    
+            pooling_size: 2,                   
+            pooling_stride: 2,                
             flattening_strategy:FlatteningStrategy::MeanPooling,
             // Dense Layer Defaults
-            num_dense_layers: 2,               // A reasonable number of dense layers
-            dense_units: vec![128, 64],        // Common default fully connected layers
+            num_dense_layers: 2,               
+            dense_units: vec![128, 64],       
 
             // Regularization & Initialization
-            dropout_rate: 0.5,                 // No dropout by default
-            weight_initialization: WeightInitialization::Xavier,  // Common initialization
+            dropout_rate: 0.5,                 
+            weight_initialization: WeightInitialization::Xavier,  
 
             // Optimization
-            optimizer: Optimizer::Adam,        // Adam is a common optimizer
+            optimizer: Optimizer::Adam,        
             dense_layers:Vec::new(),
             convolution_layers:Vec::new(),
 
