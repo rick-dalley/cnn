@@ -4,7 +4,8 @@ use std::fs::File;
 use std::io::{BufReader, Error as IoError};
 use std::str::FromStr;
 use serde_json::{from_reader, Value};
-use crate::{loadr, log, layr};
+use crate::clipr::AdaptiveGradientClipping;
+use crate::{clipr, layr, loadr, log};
 use matrix::matrix::{Dot, Matrix, FlatteningStrategy}; 
 
 
@@ -141,6 +142,10 @@ pub struct Model {
     #[serde(skip)]
     pub convolution_layers: Vec<layr::Layer>,
 
+    // clipper
+     #[serde(skip)]
+    pub clipper: clipr::AdaptiveGradientClipping,
+
 }
 
 impl Default for Model {
@@ -189,6 +194,9 @@ impl Default for Model {
             dense_layers:Vec::new(),
             convolution_layers:Vec::new(),
 
+            // Clipping
+            clipper: AdaptiveGradientClipping::new(0, 0.0)
+
         }
     }
 }
@@ -200,7 +208,7 @@ impl Model {
     pub fn from_json(path: &str) -> Result<Self, IoError> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
-
+        let default_activation_function = "leaky_relu";
         // Read JSON as a generic `Value`
         let json_value: Value = from_reader(reader)?;
 
@@ -289,7 +297,7 @@ impl Model {
         let weight_initialization = json_value.get("weight_initialization")
             .and_then(Value::as_str)
             .map(|s| WeightInitialization::from_str(s).unwrap_or(WeightInitialization::Xavier))
-            .unwrap_or(WeightInitialization::Xavier);
+            .unwrap_or(WeightInitialization::He);
 
         let pooling_type = json_value.get("pooling_type")
             .and_then(Value::as_str)
@@ -359,12 +367,12 @@ impl Model {
         let dense_activation_fn = json_value.get("dense_activation_fn")
             .and_then(Value::as_str)
             .map(String::from)
-            .unwrap_or_else(|| "relu".to_string());  // Default to "relu"
+            .unwrap_or_else(|| default_activation_function.to_string());  // Default to "relu"
 
         let conv_activation_fn = json_value.get("conv_activation_fn")
             .and_then(Value::as_str)
             .map(String::from)
-            .unwrap_or_else(|| "relu".to_string());  // Default to "relu"
+            .unwrap_or_else(||default_activation_function.to_string());  // Default to "relu"
 
         let alpha = json_value.get("default_alpha")
             .and_then(Value::as_f64)
@@ -375,9 +383,9 @@ impl Model {
             .unwrap_or(1.0); // Default for SELU
 
         let (dense_family, conv_family) = match layer_function_strategy.as_str() {
-            "default" => ("relu", "relu"),
+            "default" => (default_activation_function, default_activation_function),
             "approach" => match approach.as_str() {
-                "resnet" => ("relu","relu"), 
+                "resnet" => ("leaky_relu","leaky_relu"), 
                 "vgg" => ("tanh","tanh"),
                 _ => panic!("Unknown approach: {}", approach),
             },
@@ -400,6 +408,17 @@ impl Model {
             alpha, 
             lambda
         );
+
+        let clipping_factor = json_value.get("adaptive_clipping_factor")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.01); 
+
+        let default_buffer = (batch_size * 3).min(1024) as usize;  // Cap at 1024
+        let clipping_buffer = json_value.get("adaptive_clipping_buffer")
+            .and_then(Value::as_u64)
+            .unwrap_or(default_buffer.try_into().unwrap()) as usize;
+
+        let clipper = AdaptiveGradientClipping::new(clipping_buffer,clipping_factor);
 
         // Return parsed config as `Model`
         let model = Self {
@@ -436,6 +455,7 @@ impl Model {
             optimizer,
             dense_layers,
             convolution_layers,
+            clipper
         };
 
         Ok(model)
@@ -447,6 +467,7 @@ impl Model {
         alpha: f64, 
         lambda: f64
     ) -> Vec<layr::Layer> {
+
         let mut layers = Vec::new();
 
         for &_units in dense_units {
@@ -486,18 +507,9 @@ impl Model {
     pub fn train(&mut self) {
         println!("Training...");
         let location = self.location.as_str();
-        let log_location = "./logs/log.csv";
-        let squelch = false;
-        let (training, training_labels, validation, validation_labels) = loadr::populate(location);
+        let _ = log::clear_logs("./logs");
 
-        // log validation
-        log::matrix_stats(0, 0, &validation, log_location, "validation", squelch);
-        log::n_elements(
-            "validation labels", 
-            &validation_labels, 
-            self.batch_size, 
-            log_location
-        );
+        let (training, training_labels, validation, validation_labels) = loadr::populate(location);
 
         // set how many times we'll run the training loop
         let epochs = self.epochs;
@@ -505,7 +517,7 @@ impl Model {
         let batch_size = self.batch_size;
 
         let rows = training.rows;
-
+        let learning_rate = self.learning_rate;
         //determing the totla number of batchs
         let total_batches = epochs * (rows / batch_size); // Total steps
 
@@ -548,8 +560,7 @@ impl Model {
                     let loss = self.calculate_loss(&predictions, label);
                 
                     // perform backward propagation
-                    self.backward(&predictions, label, &features, &activations, loss);
-
+                    self.backward(&predictions, label, &features, &activations, loss, learning_rate);
                 }
                 // output progress
                 pb.inc(1);
@@ -626,6 +637,9 @@ impl Model {
         // apply dense layers
         for layer in &self.dense_layers {
             activations.push(output.clone());
+
+            // Debugging
+            // output.normalize_with(1e-5);
             output = self.apply_dense(&output, &layer);
         }
 
@@ -727,8 +741,10 @@ impl Model {
         label: usize,         
         flattened_features: &Matrix,  
         activations: &Vec<Matrix>,
-        loss: f64  
+        loss: f64,
+        learning_rate: f64 
     ) {
+
         let label_matrix = Matrix::from_labels(&vec![label], prediction.cols);
 
         // compute dL/dO (Cross-Entropy Loss Gradient)
@@ -747,22 +763,74 @@ impl Model {
             let prev_activation = if i == 0 { flattened_features.clone() } else { activations[i - 1].clone() };
 
             // compute gradients
-            let d_weights = prev_activation.transpose().dot(&d_activation);
+            let mut d_weights = prev_activation.transpose().dot(&d_activation);
             let d_biases = d_activation.sum_axis(matrix::matrix::Orientation::ColumnWise);
+            
+            match self.clipping {
+                0 => {} // No clipping
+                1 => {
+                    d_weights.clip_gradients_to(self.clip_threshold);
+                }, // Hard clipping
+                2 => {
+                    self.clipper.clip_gradients(&mut d_weights);
+                }, // Adaptive gradient norm clipping
+                _ => panic!("Invalid clipping setting"),
+            }
 
             // update weights and biases
-            let layer_weights = &layer.weights - &(d_weights * self.learning_rate);
-            let layer_biases = &layer.biases - &(d_biases * self.learning_rate);
-            let log_location = "./logs/stats.csv";
-            log::matrix_stats(0, 0, &layer.weights, log_location, "weights before", false);
+            let layer_weights = &layer.weights - &(d_weights * learning_rate);
+            let layer_biases = &layer.biases - &(d_biases * learning_rate);
+
             layer.set_weights(layer_weights);
             layer.set_biases(layer_biases);
-            log::matrix_stats(0, 0, &layer.weights, log_location, "weights after", false);
 
             // propagate error backward
             d_output = d_activation.dot(&layer.weights.transpose());
         }
     }
 
+    // printing
+    pub fn print_summary(&self) {
+        println!("Model Summary:");
+        println!("--------------------------------");
+        println!("Location: {}", self.location);
+        println!("Epochs: {}", self.epochs);
+        println!("Checkpoints: {}", self.check_points);
+        println!("Learning Rate: {:.6}", self.learning_rate);
+        println!("Clip Threshold: {:.6}", self.clip_threshold);
+        println!("Batch Size: {}", self.batch_size);
+        println!("Num Layers: {}", self.num_layers);
+        println!("Hidden Dimensions: {}", self.hidden_dimensions);
+        
+        println!("--------------------------------");
+        println!("Dense Layers:");
+        for (_i, layer) in self.dense_layers.iter().enumerate() {
+            println!("Weights:");
+            Self::print_matrix_sample(5, &layer.weights);
+            println!("Biases:");
+            Self::print_matrix_sample(5, &layer.biases);
+        }
 
+        println!("--------------------------------");
+        println!("Convolution Layers:");
+        for (_i, layer) in self.convolution_layers.iter().enumerate() {
+            println!("Weights:");
+            Self::print_matrix_sample(5, &layer.weights);
+            println!("Biases:");
+            Self::print_matrix_sample(5, &layer.biases);
+        }
+
+        println!("--------------------------------");
+        println!("Clipper Config: {:?}", self.clipper);
+    }
+    
+    // log_sample
+    pub fn print_matrix_sample(rows:usize,matrix:&Matrix){
+        for i in 0..rows.min(matrix.rows) {
+            let row_slice = matrix.sample(i, 10); 
+            println!("{:?}", row_slice);
+        }
+    }
+
+ 
 }

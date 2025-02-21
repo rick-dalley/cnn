@@ -2,6 +2,7 @@ pub mod cnn;
 pub mod log;
 pub mod loadr;
 pub mod layr;
+pub mod clipr;
 
 use std::process;
 use cnn::Model; // ensure `cnn_model` is the correct module path
@@ -18,7 +19,7 @@ fn main() {
             process::exit(1);
         }
     };
-
+    cnn_model.print_summary();
     // uncommenbt tge next line log the CNN model to the screen
     // log::model(&cnn_model, "", log::LogTo::Screen);
 

@@ -1,10 +1,10 @@
 use std::io::Write;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::fmt::Debug;
+use std::path::Path;
 use std::sync::Once;
 use matrix::Matrix;
 use std::process;
-use crate::cnn::Model;
 
 
 /// enum to define logging output type
@@ -14,6 +14,25 @@ pub enum LogTo {
     JSON,
     Log,
 }
+
+pub fn clear_logs(dir_path: &str) -> std::io::Result<()> {
+    let path = Path::new(dir_path);
+
+    if path.exists() && path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let entry_path = entry.path();
+            
+            if entry_path.is_file() {
+                fs::remove_file(&entry_path)?;
+            } else if entry_path.is_dir() {
+                fs::remove_dir_all(&entry_path)?; // Remove subdirectories and their contents
+            }
+        }
+    }
+    Ok(())
+}
+
 
 pub fn memory_usage(tag: &str) {
     let pid = process::id();
@@ -120,104 +139,3 @@ pub fn sample(name: &str, rows:usize, num_elements:usize, matrix:&Matrix, log_lo
     }
 }
 
-
-/// logs the model configuration based on the selected log type.
-pub fn model(model: &Model, log_location: &str, log_to: LogTo) {
-    match log_to {
-        LogTo::Screen => {
-            // pretty-print to console
-            println!("{:#?}", model);
-        }
-        LogTo::JSON => {
-            // serialize to JSON and then save to a file
-            let json_output = serde_json::to_string_pretty(&model)
-                .expect("Failed to serialize model config");
-
-            let mut file = OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(format!("{}.json", log_location))
-                .expect("Failed to open log file");
-
-            writeln!(file, "{}", json_output)
-                .expect("Failed to write model config to log file.");
-        }
-        LogTo::Log => {
-            static HEADER_PRINTED: Once = Once::new();
-
-            let mut file = OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(format!("{}.csv", log_location))
-                .expect("Failed to open log file");
-
-            // write the CSV header only once
-            HEADER_PRINTED.call_once(|| {
-                writeln!(file, "model.location,
-                model.epochs,
-                model.check_points,
-                model.learning_rate,
-                model.logit_scaling_factor,
-                model.clipping,
-                model.clip_threshold,
-                model.temperature_scaling,
-                model.vocab_size,
-                model.batch_size,
-                model.num_classes,
-                model.num_heads,
-                model.num_layers,
-                model.hidden_layer_scaling,
-                model.model_dimensions,
-                model.hidden_dimensions,
-                model.num_conv_layers,
-                model.conv_filters,
-                model.kernel_sizes,
-                model.stride_sizes,
-                model.padding,
-                model.pooling_type,
-                model.pooling_size,
-                model.pooling_stride,
-                model.num_dense_layers,
-                model.dense_units,
-                model.dropout_rate,
-                model.weight_initialization,
-                model.optimizer")
-                    .expect("Failed to write header.");
-            });
-
-            // Append model config as CSV row
-            writeln!(
-                file,
-                "{}, {},{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{:?},{:?},{:?},{:?},{:?},{},{},{:?},{:?},{},{:?},{:?}",
-                model.location,
-                model.epochs,
-                model.check_points,
-                model.learning_rate,
-                model.logit_scaling_factor,
-                model.clipping,
-                model.clip_threshold,
-                model.temperature_scaling,
-                model.batch_size,
-                model.num_classes,
-                model.num_heads,
-                model.num_layers,
-                model.hidden_layer_scaling,
-                model.model_dimensions,
-                model.hidden_dimensions,
-                model.num_conv_layers,
-                model.conv_filters,
-                model.kernel_sizes,
-                model.stride_sizes,
-                model.padding,
-                model.pooling_type,
-                model.pooling_size,
-                model.pooling_stride,
-                model.num_dense_layers,
-                model.dense_units,
-                model.dropout_rate,
-                model.weight_initialization,
-                model.optimizer
-            ).expect("Failed to write model config to log file.");
-        }
-    }
-}
