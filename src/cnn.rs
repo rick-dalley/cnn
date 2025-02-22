@@ -5,7 +5,7 @@ use std::io::{BufReader, Error as IoError};
 use std::str::FromStr;
 use serde_json::{from_reader, Value};
 use crate::clipr::AdaptiveGradientClipping;
-use crate::{clipr, layr, loadr, log};
+use crate::{clipr, layr, loadr, log, optimizr};
 use matrix::matrix::{Dot, Matrix, FlatteningStrategy}; 
 
 
@@ -50,26 +50,6 @@ impl FromStr for PoolingType {
             "max" => Ok(PoolingType::Max),
             "average" => Ok(PoolingType::Average),
             _ => Err(format!("Invalid PoolingType: {}", s)),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-pub enum Optimizer {
-    Adam,
-    SGD,
-    RMSprop,
-}
-
-impl FromStr for Optimizer {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "adam" => Ok(Optimizer::Adam),
-            "sgd" => Ok(Optimizer::SGD),
-            "rmsprop" => Ok(Optimizer::RMSprop),
-            _ => Err(format!("Invalid Optimizer: {}", s)),
         }
     }
 }
@@ -134,7 +114,7 @@ pub struct Model {
     pub weight_initialization: WeightInitialization,
     
     // optimization
-    pub optimizer: Optimizer,
+    pub optimizer: optimizr::Optimizer,
 
     // layers
     #[serde(skip)]
@@ -190,7 +170,7 @@ impl Default for Model {
             weight_initialization: WeightInitialization::Xavier,  
 
             // Optimization
-            optimizer: Optimizer::Adam,        
+            optimizer: optimizr::Optimizer::Adam,        
             dense_layers:Vec::new(),
             convolution_layers:Vec::new(),
 
@@ -291,8 +271,8 @@ impl Model {
 
         let optimizer = json_value.get("optimizer")
             .and_then(Value::as_str)
-            .map(|s| Optimizer::from_str(s).unwrap_or(Optimizer::Adam))
-            .unwrap_or(Optimizer::Adam);
+            .map(|s| optimizr::Optimizer::from_str(s).unwrap_or(optimizr::Optimizer::Adam))
+            .unwrap_or(optimizr::Optimizer::Adam);
 
         let weight_initialization = json_value.get("weight_initialization")
             .and_then(Value::as_str)
@@ -624,10 +604,7 @@ impl Model {
                 };
 
                 let output_dim = self.dense_units[i]; // get the output size from config
-
-                layer.weights = Matrix::random(input_dim, output_dim);
-                layer.biases = Matrix::zeros(1, output_dim);
-
+                layer.init_weights_and_biases(input_dim, output_dim);
             }
         }
  
@@ -778,11 +755,7 @@ impl Model {
             }
 
             // update weights and biases
-            let layer_weights = &layer.weights - &(d_weights * learning_rate);
-            let layer_biases = &layer.biases - &(d_biases * learning_rate);
-
-            layer.set_weights(layer_weights);
-            layer.set_biases(layer_biases);
+            layer.update_weights(&d_weights, &d_biases, learning_rate, self.optimizer);
 
             // propagate error backward
             d_output = d_activation.dot(&layer.weights.transpose());
